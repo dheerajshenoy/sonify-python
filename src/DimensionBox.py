@@ -8,7 +8,6 @@ class DimensionDialog(QDialog):
         super().__init__()
         self.setWindowTitle("Enter Image Dimensions")
 
-
         self.layout = QVBoxLayout()
 
         self.width_input = QLineEdit()

@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QLabel,
-    QPushButton, QVBoxLayout,
+    QPushButton, QVBoxLayout, QMessageBox,
     QHBoxLayout, QApplication, QGraphicsScene,
     QGraphicsPixmapItem, QGraphicsLineItem, QMenuBar,
     QGraphicsEllipseItem, QMenu, QFileDialog, QToolBar,
@@ -11,13 +11,20 @@ import sys
 import numpy as np
 import cv2
 import time
+import soundfile as sf
+import os
+from pedalboard import (Pedalboard, Compressor, Reverb, Phaser, PitchShift,
+    Delay, Distortion, Chorus, Limiter, LadderFilter, Mix, Convolution)
+from typing import Dict
+
 from visound.core.TraversalMode import TraversalMode
-from visound.core.Sonify import Sonify
+from visound.core.sonify import Sonify
+
 from DimensionBox import DimensionDialog
 from AudioController import AudioController
-from pedalboard import (Pedalboard, Compressor, Reverb, Phaser, PitchShift,
-        Delay, Distortion, Chorus, Limiter, LadderFilter, Mix, Convolution)
 from EffectsDialog import *
+from ScreenRecordDialog import ScreenRecordDialog
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -40,6 +47,9 @@ class MainWindow(QMainWindow):
         self._audio_controller = AudioController()
         self._pedalboard = Pedalboard()
         self._active_effects = {}
+        self._capture_dir = None
+        self._capture_index = 0
+        self.sonify_obj = None
 
         self._layout = QVBoxLayout()
         self._graphics_view = GraphicsView()
@@ -277,6 +287,10 @@ class MainWindow(QMainWindow):
         self.menu__file.addAction(self.menu__file__open)
         self.menu__file__open.triggered.connect(self._gui_open_image)
 
+        self.menu__file__save_audio = QAction("Save Audio")
+        self.menu__file.addAction(self.menu__file__save_audio)
+        self.menu__file__save_audio.triggered.connect(self._save_audio)
+
         self.menu__file__exit = QAction("Exit")
         self.menu__file.addAction(self.menu__file__exit)
         self.menu__file__exit.triggered.connect(lambda: QApplication.exit())
@@ -355,9 +369,17 @@ class MainWindow(QMainWindow):
 
         self.menu__view.addAction(self.menu__view__toolbar)
 
+        self.menu__tools = QMenu("Tools")
+
+        self.action__screenrecord = QAction("Screen Record")
+        self.menu__tools.addAction(self.action__screenrecord)
+        self.action__screenrecord.triggered.connect(self._screen_record)
+
+
         self.menubar.addMenu(self.menu__file)
         self.menubar.addMenu(self.menu__edit)
         self.menubar.addMenu(self.menu__view)
+        self.menubar.addMenu(self.menu__tools)
 
         self.setMenuBar(self.menubar)
 
@@ -531,36 +553,36 @@ class MainWindow(QMainWindow):
     def _helper_sonify(self) -> None:
         self._sample_rate = int(self.action__samplerate.text())
         self._dpc = float(self.action__dpc.text())
-        sonify = Sonify(file_path = self._filename,
-                        dimension = self._dimension,
-                        duration_per_column = self._dpc,
-                        sample_rate = self._sample_rate)
+        self.sonify_obj = Sonify(file_path = self._filename,
+                                 dimension = self._dimension,
+                                 duration_per_column = self._dpc,
+                                 sample_rate = self._sample_rate)
 
         match self.action__traversal.currentIndex():
             case 0:
-                sonify.LeftToRight()
+                self.sonify_obj.LeftToRight()
                 self._traversal_mode = TraversalMode.LeftToRight
             case 1:
-                sonify.RightToLeft()
+                self.sonify_obj.RightToLeft()
                 self._traversal_mode = TraversalMode.RightToLeft
             case 2:
-                sonify.TopToBottom()
+                self.sonify_obj.TopToBottom()
                 self._traversal_mode = TraversalMode.TopToBottom
             case 3:
-                sonify.BottomToTop()
+                self.sonify_obj.BottomToTop()
                 self._traversal_mode = TraversalMode.BottomToTop
             case 4:
-                sonify.CircleInward()
+                self.sonify_obj.CircleInward()
                 self._traversal_mode = TraversalMode.CircleInward
             case 5:
-                sonify.CircleOutward()
+                self.sonify_obj.CircleOutward()
                 self._traversal_mode = TraversalMode.CircleOutward
 
         self._playable = True
         self.action__play.setEnabled(self._playable)
         self.init_bar_position()
 
-        self._audio = sonify.audio
+        self._audio = self.sonify_obj.audio * 0.5
 
         # Apply Effects
         if len(self._active_effects) > 0:
@@ -596,3 +618,50 @@ class MainWindow(QMainWindow):
         Plays the audio if image has been sonified
         """
         self._pause_resume_requested()
+
+    def _save_audio(self) -> None:
+        """
+        Saves the audio
+        """
+
+        if self._audio is None or self._sample_rate is None:
+            QMessageBox.warning(self, "No audio or sample rate defined",
+                                "Looks like you have not yet sonified any images!")
+            return
+        filename, _ = QFileDialog.getSaveFileName(self)
+        if filename != "":
+            sf.write(filename, self._audio, self._sample_rate)
+
+    def _screen_recording(self, record: bool) -> None:
+        """
+        Function that actually screen records.
+        """
+        if record:
+            self.screen_record_timer = QTimer()
+            self.screen_record_timer.setInterval(int(1 / 60 * 1000))  # 60 FPS
+            self.screen_record_timer.timeout.connect(self._capture_graphicsview)
+            self.screen_record_timer.start()
+        else:
+            self.screen_record_timer.stop()
+            self.screen_record_timer = None
+            self._capture_index = 0
+
+    def _capture_graphicsview(self):
+        """
+        Timer callback for capturing image of the graphics view
+        """
+        pixmap = self._graphics_view.grab()
+        pic_path = os.path.join(self._capture_dir, str(self._capture_index) + ".png")
+        self._capture_index += 1
+        pixmap.save(pic_path)
+        print("Saving")
+
+    def _screen_record(self) -> None:
+        """
+        Record the QGraphicsView.
+        """
+
+        self._capture_dir = QFileDialog.getExistingDirectory(self)
+
+        d = ScreenRecordDialog()
+        d.start_recording_signal.connect(self._screen_recording)
